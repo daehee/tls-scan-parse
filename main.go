@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/csv"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -20,6 +21,7 @@ var (
 		`((?:(?:[a-z0-9]\.|[a-z0-9][a-z0-9\-]{0,61}[a-z0-9])\.)+mil)`, // match dotmil by default
 		"common name regex search pattern",
 	)
+	outputJSON = flag.Bool("json", false, "output as json")
 )
 
 func main() {
@@ -31,31 +33,37 @@ func main() {
 	jsonStr := make(chan string)
 	go reader(jsonStr, done)
 
-	parsed := make(chan result)
+	parsed := make(chan Result)
 	go parser(done, jsonStr, parsed)
 
-	seen := make(map[string]bool)
-
-	w := csv.NewWriter(os.Stdout)
-
-	for res := range parsed {
-		for _, s := range res.subdomains {
-			if found := seen[s]; !found {
-				o := []string{res.ip, s}
-				w.Write(o)
+	if *outputJSON {
+		enc := json.NewEncoder(os.Stdout)
+		for res := range parsed {
+			if err := enc.Encode(res); err != nil {
+				log.Fatal(err)
 			}
 		}
+	} else {
+		seen := make(map[string]bool)
+		w := csv.NewWriter(os.Stdout)
+		for res := range parsed {
+			for _, s := range res.Subdomains {
+				if found := seen[s]; !found {
+					o := []string{res.IP, s}
+					w.Write(o)
+				}
+			}
+		}
+		w.Flush()
+		if err := w.Error(); err != nil {
+			log.Fatal(err)
+		}
 	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		log.Fatal(err)
-	}
-
 }
 
-type result struct {
-	ip         string
-	subdomains []string
+type Result struct {
+	IP         string   `json:"ip"`
+	Subdomains []string `json:"subdomains"`
 }
 
 func reader(c chan<- string, done <-chan interface{}) {
@@ -70,7 +78,7 @@ func reader(c chan<- string, done <-chan interface{}) {
 	}
 }
 
-func parser(done <-chan interface{}, i <-chan string, c chan<- result) {
+func parser(done <-chan interface{}, i <-chan string, c chan<- Result) {
 	defer close(c)
 
 	var p fastjson.Parser
@@ -98,7 +106,7 @@ func parser(done <-chan interface{}, i <-chan string, c chan<- result) {
 
 		subdomains = append(subdomains, altNameRx.FindAllString(cleanVal(j.GetStringBytes("certificateChain", "0", "subjectAltName")), -1)...)
 
-		res := result{ip: ip, subdomains: subdomains}
+		res := Result{IP: ip, Subdomains: subdomains}
 
 		select {
 		case <-done:
